@@ -1,0 +1,110 @@
+"""
+Featherless Proxy - User routes
+"""
+from fastapi import APIRouter, Request, HTTPException, Depends
+from fastapi.responses import JSONResponse
+from database import (
+    DB_PATH, get_user_by_id, get_usage_stats, get_recent_logs,
+    get_timeseries, get_credit_transactions, list_api_keys,
+    create_api_key, delete_api_key, update_user,
+)
+from auth import get_session_from_request
+
+router = APIRouter(prefix="/user")
+
+
+async def require_session(request: Request):
+    session = await get_session_from_request(DB_PATH, request)
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return session
+
+
+@router.get("/api/me")
+async def get_me(session: dict = Depends(require_session)):
+    user = await get_user_by_id(DB_PATH, session["user_id"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return JSONResponse({
+        "id": user["id"], "username": user["username"],
+        "credits": user["credits"], "credit_limit": user["credit_limit"],
+        "is_admin": bool(user["is_admin"]),
+    })
+
+
+@router.get("/api/stats")
+async def my_stats(hours: float = 24, session: dict = Depends(require_session)):
+    return JSONResponse(await get_usage_stats(DB_PATH, hours=hours, user_id=session["user_id"]))
+
+
+@router.get("/api/timeseries")
+async def my_timeseries(hours: float = 24, bucket_minutes: int = 60, session: dict = Depends(require_session)):
+    return JSONResponse(await get_timeseries(DB_PATH, hours=hours, bucket_minutes=bucket_minutes, user_id=session["user_id"]))
+
+
+@router.get("/api/logs")
+async def my_logs(limit: int = 50, session: dict = Depends(require_session)):
+    return JSONResponse(await get_recent_logs(DB_PATH, limit=limit, user_id=session["user_id"]))
+
+
+@router.get("/api/keys")
+async def my_keys(session: dict = Depends(require_session)):
+    return JSONResponse(await list_api_keys(DB_PATH, user_id=session["user_id"]))
+
+
+@router.post("/api/keys/create")
+async def create_my_key(request: Request, session: dict = Depends(require_session)):
+    import secrets as sec
+    body = await request.json()
+    key = "fp_" + sec.token_urlsafe(32)
+    name = body.get("name", "")
+    # Users always get P2
+    await create_api_key(DB_PATH, key, name, session["user_id"], 2)
+    return JSONResponse({"key": key, "name": name})
+
+
+@router.delete("/api/keys/{key_id}")
+async def delete_my_key(key_id: int, session: dict = Depends(require_session)):
+    # Users can only delete their own keys
+    keys = await list_api_keys(DB_PATH, user_id=session["user_id"])
+    if not any(k["id"] == key_id for k in keys):
+        raise HTTPException(status_code=403, detail="Not your key")
+    await delete_api_key(DB_PATH, key_id)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/api/password")
+async def change_password(request: Request, session: dict = Depends(require_session)):
+    from auth import hash_password, verify_password
+    body = await request.json()
+    current = body.get("current_password", "")
+    new_pw = body.get("new_password", "")
+    if not current or not new_pw:
+        raise HTTPException(status_code=400, detail="Current and new password required")
+    if len(new_pw) < 4:
+        raise HTTPException(status_code=400, detail="Password too short (min 4 chars)")
+    user = await get_user_by_id(DB_PATH, session["user_id"])
+    if not verify_password(current, user["password_hash"]):
+        raise HTTPException(status_code=403, detail="Current password incorrect")
+    await update_user(DB_PATH, session["user_id"], password_hash=hash_password(new_pw))
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/transactions")
+async def my_transactions(limit: int = 50, session: dict = Depends(require_session)):
+    return JSONResponse(await get_credit_transactions(DB_PATH, user_id=session["user_id"], limit=limit))
+
+
+@router.get("/api/models")
+async def my_models(session: dict = Depends(require_session)):
+    """Users can see available models with prices."""
+    from database import list_models as list_all_models
+    models = await list_all_models(DB_PATH)
+    return JSONResponse([{
+        "model_id": m["model_id"],
+        "display_name": m["display_name"],
+        "concurrent_cost": m["concurrent_cost"],
+        "input_price": m["input_price"],
+        "cached_read_price": m["cached_read_price"],
+        "output_price": m["output_price"],
+    } for m in models])

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.env.local
+.venv/
+venv/
+proxy.db
+*.db
+*.bak

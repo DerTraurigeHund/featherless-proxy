@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in · Featherless Proxy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;750&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css?v=5">
+</head>
+<body>
+<div class="center-screen">
+    <div class="auth-card">
+        <div class="auth-logo">🪶</div>
+        <h1 style="text-align:center;font-size:1.4rem;margin:8px 0 20px"><span class="brand-gradient">Featherless Proxy</span></h1>
+        <form id="login-form">
+            <div class="field"><label>Username</label><input id="username" placeholder="Username" autocomplete="username" required></div>
+            <div class="field"><label>Password</label><input id="password" type="password" placeholder="Password" autocomplete="current-password" required></div>
+            <button type="submit" id="submit-btn" style="width:100%;margin-top:4px">Sign in</button>
+        </form>
+        <p id="error" style="color:var(--red);text-align:center;margin-top:14px;display:none"></p>
+    </div>
+</div>
+<script>
+const form = document.getElementById('login-form');
+const errEl = document.getElementById('error');
+const btn = document.getElementById('submit-btn');
+form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errEl.style.display = 'none';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Signing in…';
+    try {
+        const resp = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ username: document.getElementById('username').value, password: document.getElementById('password').value }),
+        });
+        const data = await resp.json();
+        if (data.ok) { location.href = data.is_admin ? '/admin' : '/dashboard'; return; }
+        errEl.textContent = data.error || 'Login failed';
+        errEl.style.display = 'block';
+    } catch {
+        errEl.textContent = 'Network error — please try again';
+        errEl.style.display = 'block';
+    }
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
+});
+</script>
+</body>
+</html>
