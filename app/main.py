@@ -5,21 +5,28 @@ User accounts, credits, admin panel, user panel.
 import os
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
 
-from database import init_db, DB_PATH, get_user_by_username
-from auth import hash_password, verify_password, needs_rehash, create_session, destroy_session, get_session_from_request
-from cache import ResponseCache
-from queue_manager import QueueManager
-from api_routes import router as api_router, init_routes
-from admin_routes import router as admin_router, init_admin
-from user_routes import router as user_router
+from app.database import init_db, get_user_by_username
+from app.auth import hash_password, verify_password, needs_rehash, create_session, destroy_session, get_session_from_request
+from app.cache import ResponseCache
+from app.queue_manager import QueueManager
+from app.api_routes import router as api_router, init_routes
+from app.admin_routes import router as admin_router, init_admin
+from app.user_routes import router as user_router
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # Config
 FEATHERLESS_API_BASE = os.getenv("FEATHERLESS_API_BASE", "https://api.featherless.ai/v1")
@@ -31,16 +38,17 @@ PORT = int(os.getenv("PORT", "8080"))
 DATABASE_PATH = os.getenv("DATABASE_PATH", "proxy.db")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "32768"))
 
-import database
+import app.database as database
 database.DB_PATH = DATABASE_PATH
 
-# The route modules captured ``DB_PATH`` at import time via ``from database
-# import DB_PATH``. Re-point them at the configured database so the whole app
-# uses one consistent DB even when DATABASE_PATH differs from the default.
-import api_routes as _api_routes
-import admin_routes as _admin_routes
-import user_routes as _user_routes
-import auth as _auth
+# The route modules captured ``DB_PATH`` at import time via ``from app.database
+# import DB_PATH``-style imports inside their own module. Re-point them at the
+# configured database so the whole app uses one consistent DB even when
+# DATABASE_PATH differs from the default.
+import app.api_routes as _api_routes
+import app.admin_routes as _admin_routes
+import app.user_routes as _user_routes
+import app.auth as _auth
 for _mod in (_api_routes, _admin_routes, _user_routes, _auth):
     _mod.DB_PATH = DATABASE_PATH
 
@@ -58,7 +66,7 @@ async def lifespan(app: FastAPI):
     await init_db(DATABASE_PATH)
 
     # Create default admin if no users exist
-    from database import list_users, create_user
+    from app.database import list_users, create_user
     users = await list_users(DATABASE_PATH)
     if not users:
         await create_user(DATABASE_PATH, "admin", hash_password("admin"), is_admin=1, credits=0, credit_limit=0)
@@ -76,9 +84,11 @@ async def lifespan(app: FastAPI):
     await http_client.aclose()
 
 
+BASE_DIR = Path(__file__).resolve().parent
+
 app = FastAPI(title="Featherless Proxy", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # Register routers
 app.include_router(api_router)
@@ -100,7 +110,7 @@ async def login(request: Request):
         return JSONResponse({"error": "Account disabled"}, status_code=403)
     # Transparently upgrade legacy/low-cost password hashes on successful login.
     if needs_rehash(user["password_hash"]):
-        from database import update_user
+        from app.database import update_user
         await update_user(DATABASE_PATH, user["id"], password_hash=hash_password(password))
     token = await create_session(DATABASE_PATH, user["id"], user["username"], user["is_admin"])
     resp = JSONResponse({"ok": True, "is_admin": bool(user["is_admin"]), "username": user["username"]})
@@ -157,10 +167,5 @@ async def dashboard_page(request: Request):
 
 
 if __name__ == "__main__":
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-    uvicorn.run("main:app", host=os.getenv("HOST", "0.0.0.0"),
+    uvicorn.run("app.main:app", host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8080")), reload=False)

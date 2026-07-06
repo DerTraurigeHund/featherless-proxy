@@ -180,7 +180,8 @@ function readChartBucket(hours) {
 }
 
 function chartOpts(extra = {}) {
-    return {
+    const { scales: exScales, plugins: exPlugins, ...rest } = extra;
+    const base = {
         responsive: true, maintainAspectRatio: false,
         interaction: { intersect: false, mode: 'index' },
         animation: { duration: 250 },
@@ -204,6 +205,26 @@ function chartOpts(extra = {}) {
                 titleColor: '#e8ebf2', bodyColor: '#c4cad6', padding: 10, cornerRadius: 8, displayColors: true, boxPadding: 4,
             },
         },
-        ...extra,
     };
+    // Shallow-merge scales/plugins one level deep so callers can tweak a
+    // single option (e.g. { scales: { x: { stacked: true } } }) without
+    // clobbering the rest of the base styling.
+    if (exScales) {
+        if (exScales.x) base.scales.x = { ...base.scales.x, ...exScales.x };
+        if (exScales.y) base.scales.y = { ...base.scales.y, ...exScales.y };
+    }
+    if (exPlugins) {
+        if (exPlugins.legend) base.plugins.legend = { ...base.plugins.legend, ...exPlugins.legend };
+        if (exPlugins.tooltip) base.plugins.tooltip = { ...base.plugins.tooltip, ...exPlugins.tooltip };
+    }
+    return { ...base, ...rest };
+}
+
+// Hex color ("#rrggbb") -> "rgba(r,g,b,alpha)", used to derive translucent
+// line fills for the compare view's multi-user charts from the shared
+// comparison color palette.
+function hexToRgba(hex, alpha = 1) {
+    const h = hex.replace('#', '');
+    const r = parseInt(h.substring(0, 2), 16), g = parseInt(h.substring(2, 4), 16), b = parseInt(h.substring(4, 6), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
 }

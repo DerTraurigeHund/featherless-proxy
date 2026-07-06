@@ -250,8 +250,6 @@ class ResponseCache:
             if not model_chunks:
                 del self._chunks[model]
 
-        if self.max_chunks is None:
-            return
         total = sum(len(m) for m in self._chunks.values())
         while total > self.max_chunks:
             oldest_model = None

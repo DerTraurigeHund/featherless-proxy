@@ -9,11 +9,11 @@ import httpx
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from database import (
+from app.database import (
     DB_PATH, get_model_by_id, get_api_key_by_key, log_usage, deduct_credits,
 )
-from cache import ResponseCache
-from queue_manager import QueueManager, QueueTimeout
+from app.cache import ResponseCache
+from app.queue_manager import QueueManager, QueueTimeout
 
 logger = logging.getLogger("featherless-proxy")
 router = APIRouter()
@@ -321,7 +321,7 @@ async def _log_stream_usage(usage, full_content, cached_ratio, cfg,
 @router.get("/v1/models")
 async def list_models_api(api_key_data: dict = Depends(verify_api_key)):
     """Return only models configured by admin, not all Featherless models."""
-    from database import list_models as list_all_models
+    from app.database import list_models as list_all_models
     models = await list_all_models(DB_PATH)
     data = [{
         "id": m["model_id"],

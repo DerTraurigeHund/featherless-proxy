@@ -19,7 +19,7 @@ cd featherless-proxy
 pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your Featherless API key and plan limits
-python main.py
+python -m app.main
 ```
 
 ## Configuration (.env)
@@ -33,6 +33,7 @@ python main.py
 | `HOST` | Bind address | `0.0.0.0` |
 | `PORT` | Listen port | `8080` |
 | `DATABASE_PATH` | SQLite database path | `proxy.db` |
+| `MAX_TOKENS` | Max output tokens allowed per request | `32768` |
 
 ## Usage
 

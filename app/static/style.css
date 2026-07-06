@@ -198,12 +198,42 @@ h3 { font-size: 1.05rem; font-weight: 650; }
 table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 th, td { padding: 11px 16px; text-align: left; white-space: nowrap; }
 thead th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.05em; background: var(--surface-2); border-bottom: 1px solid var(--border-soft); position: sticky; top: 0; }
+thead th.sortable { cursor: pointer; user-select: none; transition: color .14s; }
+thead th.sortable:hover { color: var(--text-2); }
+.sort-arrow { display: inline-block; margin-left: 3px; font-size: 0.75em; color: var(--primary); }
 tbody td { border-bottom: 1px solid var(--border-soft); }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr { transition: background .12s; }
 tbody tr:hover { background: var(--surface-2); }
 td.cost { color: var(--green); font-weight: 600; font-variant-numeric: tabular-nums; }
 .empty { text-align: center; padding: 30px; color: var(--muted); }
+
+/* ---------------- Leaderboard ---------------- */
+
+tbody tr.lb-me { background: var(--primary-soft); }
+tbody tr.lb-me:hover { background: var(--primary-soft); }
+tbody tr.lb-me td:first-child { font-weight: 700; color: var(--primary); }
+
+/* ---------------- Chip picker (compare-users) ---------------- */
+
+.chip-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 14px; border-radius: 999px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    color: var(--text-2); font-size: 0.82rem; font-weight: 600; cursor: pointer;
+    font-family: inherit; transition: all .14s;
+}
+.chip-toggle:hover { border-color: var(--primary); color: var(--text); }
+.chip-toggle.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* ---------------- Compare tiles (per-user mini rows) ---------------- */
+
+.cmp-tile-list { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.cmp-tile-row { display: flex; align-items: center; gap: 7px; font-size: 0.86rem; }
+.cmp-tile-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.cmp-tile-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.cmp-tile-val { font-weight: 700; font-variant-numeric: tabular-nums; }
 
 /* ---------------- Badges ---------------- */
 

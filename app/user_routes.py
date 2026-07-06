@@ -3,12 +3,14 @@ Featherless Proxy - User routes
 """
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
-from database import (
+from app.database import (
     DB_PATH, get_user_by_id, get_usage_stats, get_recent_logs,
     get_timeseries, get_credit_transactions, list_api_keys,
-    create_api_key, delete_api_key, update_user,
+    create_api_key, delete_api_key, update_user, get_leaderboard,
+    list_public_users, get_usage_totals_for_users, get_usage_by_model_for_users,
+    get_timeseries_for_users,
 )
-from auth import get_session_from_request
+from app.auth import get_session_from_request
 
 router = APIRouter(prefix="/user")
 
@@ -75,7 +77,7 @@ async def delete_my_key(key_id: int, session: dict = Depends(require_session)):
 
 @router.post("/api/password")
 async def change_password(request: Request, session: dict = Depends(require_session)):
-    from auth import hash_password, verify_password
+    from app.auth import hash_password, verify_password
     body = await request.json()
     current = body.get("current_password", "")
     new_pw = body.get("new_password", "")
@@ -98,7 +100,7 @@ async def my_transactions(limit: int = 50, session: dict = Depends(require_sessi
 @router.get("/api/models")
 async def my_models(session: dict = Depends(require_session)):
     """Users can see available models with prices."""
-    from database import list_models as list_all_models
+    from app.database import list_models as list_all_models
     models = await list_all_models(DB_PATH)
     return JSONResponse([{
         "model_id": m["model_id"],
@@ -108,3 +110,50 @@ async def my_models(session: dict = Depends(require_session)):
         "cached_read_price": m["cached_read_price"],
         "output_price": m["output_price"],
     } for m in models])
+
+
+@router.get("/api/leaderboard")
+async def leaderboard(hours: float | None = None, limit: int = 50, session: dict = Depends(require_session)):
+    """Cross-user usage leaderboard — requests/tokens/cost per user, so users
+    can compare their own usage against everyone else. hours omitted = all-time."""
+    rows = await get_leaderboard(DB_PATH, hours=hours, limit=limit)
+    return JSONResponse({"rows": rows, "hours": hours})
+
+
+@router.get("/api/users")
+async def list_comparable_users(session: dict = Depends(require_session)):
+    """Minimal (id, username) user list for the compare-usage picker."""
+    return JSONResponse(await list_public_users(DB_PATH))
+
+
+@router.get("/api/compare")
+async def compare_usage(user_ids: str, hours: float | None = None, session: dict = Depends(require_session)):
+    """Detailed side-by-side usage comparison for an explicit set of users:
+    overall totals (requests/tokens/cost/cache-hits) plus a per-model breakdown,
+    so users can compare not just totals but which models drive their usage
+    and how much of it was served from cache vs. freshly computed."""
+    try:
+        ids = [int(x) for x in user_ids.split(",") if x.strip() != ""]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_ids")
+    ids = list(dict.fromkeys(ids))[:12]  # de-dupe, cap comparison size
+    if not ids:
+        raise HTTPException(status_code=400, detail="user_ids required")
+    totals = await get_usage_totals_for_users(DB_PATH, ids, hours=hours)
+    by_model = await get_usage_by_model_for_users(DB_PATH, ids, hours=hours)
+    return JSONResponse({"hours": hours, "totals": totals, "by_model": by_model})
+
+
+@router.get("/api/compare/timeseries")
+async def compare_timeseries(user_ids: str, hours: float = 24, bucket_minutes: int = 60, session: dict = Depends(require_session)):
+    """Per-user usage trend over time, for overlaying one line per user on
+    the compare view's chart (totals alone hide *when* usage happened)."""
+    try:
+        ids = [int(x) for x in user_ids.split(",") if x.strip() != ""]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_ids")
+    ids = list(dict.fromkeys(ids))[:12]
+    if not ids:
+        raise HTTPException(status_code=400, detail="user_ids required")
+    res = await get_timeseries_for_users(DB_PATH, ids, hours=hours, bucket_minutes=bucket_minutes)
+    return JSONResponse(res)

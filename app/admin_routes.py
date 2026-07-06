@@ -4,15 +4,13 @@ Featherless Proxy - Admin routes
 import secrets
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
-from database import (
-    DB_PATH, list_users, create_user, get_user_by_id, update_user, delete_user,
+from app.database import (
+    DB_PATH, list_users, create_user, update_user, delete_user,
     add_credits, get_credit_transactions, list_api_keys, create_api_key, delete_api_key,
-    list_models, create_model, delete_model, update_model,
+    update_api_key, list_models, create_model, delete_model, update_model,
     get_usage_stats, get_recent_logs, get_timeseries,
 )
-from auth import hash_password, get_session_from_request
-import cache
-import queue_manager
+from app.auth import hash_password, get_session_from_request
 
 router = APIRouter(prefix="/admin")
 
@@ -113,14 +111,12 @@ async def api_create_key(request: Request, admin: dict = Depends(require_admin))
     user = await create_api_key(DB_PATH, key, name, user_id, priority)
     # enable/disable if requested (schema default is 1)
     if enabled == 0:
-        from database import update_api_key
         await update_api_key(DB_PATH, user["id"], enabled=0)
     return JSONResponse({"key": key, "name": name, "user_id": user_id, "priority": priority, "enabled": enabled})
 
 
 @router.post("/api/keys/{key_id}/update")
 async def api_update_key(key_id: int, request: Request, admin: dict = Depends(require_admin)):
-    from database import update_api_key
     body = await request.json()
     kwargs = {}
     if "name" in body:

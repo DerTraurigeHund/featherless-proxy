@@ -4,13 +4,15 @@ Users, credits, API keys, models, usage logs.
 """
 import aiosqlite
 import time
+from pathlib import Path
 
 DB_PATH = "proxy.db"
+SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
 
 
 async def init_db(db_path: str = DB_PATH):
     async with aiosqlite.connect(db_path) as db:
-        with open("schema.sql", "r") as f:
+        with open(SCHEMA_PATH, "r") as f:
             await db.executescript(f.read())
         await db.commit()
 
@@ -124,6 +126,15 @@ async def create_api_key(db_path, key, name, user_id=None, priority=2):
         )
         await db.commit()
         return {"id": cur.lastrowid, "key": key, "name": name, "user_id": user_id, "priority": priority}
+
+
+async def update_api_key(db_path, key_id, **kwargs):
+    allowed = ("name", "priority", "enabled", "user_id")
+    async with aiosqlite.connect(db_path) as db:
+        for k, v in kwargs.items():
+            if k in allowed:
+                await db.execute(f"UPDATE api_keys SET {k} = ? WHERE id = ?", (v, key_id))
+        await db.commit()
 
 
 async def get_api_key_by_key(db_path, key):
@@ -266,6 +277,178 @@ async def get_recent_logs(db_path, limit=50, user_id=None):
                 "SELECT * FROM usage_logs ORDER BY timestamp DESC LIMIT ?", (limit,)
             )).fetchall()
         return [dict(r) for r in rows]
+
+
+async def get_leaderboard(db_path, hours=None, limit=50):
+    """Aggregate usage per user for the cross-user leaderboard/comparison view.
+
+    hours=None (falsy) means all-time — no timestamp filter applied.
+    Only users with at least one logged request are included.
+    """
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        params = []
+        where = "WHERE u.enabled = 1"
+        if hours:
+            where += " AND l.timestamp >= ?"
+            params.append(time.time() - (hours * 3600))
+
+        rows = await (await db.execute(
+            f"""SELECT u.id as user_id, u.username,
+                COUNT(l.id) as requests,
+                COALESCE(SUM(l.input_tokens), 0) as input_tokens,
+                COALESCE(SUM(l.cached_read_tokens), 0) as cached_read_tokens,
+                COALESCE(SUM(l.output_tokens), 0) as output_tokens,
+                COALESCE(SUM(l.cost), 0) as cost,
+                COALESCE(SUM(l.cache_hit), 0) as cache_hits
+               FROM usage_logs l
+               JOIN users u ON u.id = l.user_id
+               {where}
+               GROUP BY u.id
+               HAVING requests > 0
+               ORDER BY cost DESC
+               LIMIT ?""", params + [limit]
+        )).fetchall()
+
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["total_tokens"] = d["input_tokens"] + d["cached_read_tokens"] + d["output_tokens"]
+            result.append(d)
+        return result
+
+
+async def list_public_users(db_path):
+    """Minimal enabled-user list (id + username) used by the compare-usage
+    user picker — deliberately excludes credits/admin flags/etc."""
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await (await db.execute(
+            "SELECT id, username FROM users WHERE enabled = 1 ORDER BY username COLLATE NOCASE"
+        )).fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_usage_totals_for_users(db_path, user_ids, hours=None):
+    """Per-user usage totals for an explicit set of users (the "compare" view).
+
+    Unlike get_leaderboard, this always returns a row for every requested user
+    — including zero usage — since comparison is more useful when it also
+    shows "this user did nothing in this period" rather than omitting them.
+    """
+    if not user_ids:
+        return []
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        params = []
+        time_clause = ""
+        if hours:
+            time_clause = " AND l.timestamp >= ?"
+            params.append(time.time() - (hours * 3600))
+        placeholders = ",".join("?" for _ in user_ids)
+        params.extend(user_ids)
+
+        rows = await (await db.execute(
+            f"""SELECT u.id as user_id, u.username,
+                COUNT(l.id) as requests,
+                COALESCE(SUM(l.input_tokens), 0) as input_tokens,
+                COALESCE(SUM(l.cached_read_tokens), 0) as cached_read_tokens,
+                COALESCE(SUM(l.output_tokens), 0) as output_tokens,
+                COALESCE(SUM(l.cost), 0) as cost,
+                COALESCE(SUM(l.cache_hit), 0) as cache_hits
+               FROM users u
+               LEFT JOIN usage_logs l ON l.user_id = u.id{time_clause}
+               WHERE u.enabled = 1 AND u.id IN ({placeholders})
+               GROUP BY u.id
+               ORDER BY u.username COLLATE NOCASE""", params
+        )).fetchall()
+
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["total_tokens"] = d["input_tokens"] + d["cached_read_tokens"] + d["output_tokens"]
+            result.append(d)
+        return result
+
+
+async def get_usage_by_model_for_users(db_path, user_ids, hours=None):
+    """Per-user, per-model usage breakdown for the compare view's model chart."""
+    if not user_ids:
+        return []
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        placeholders = ",".join("?" for _ in user_ids)
+        params = list(user_ids)
+        where = f"WHERE u.enabled = 1 AND l.user_id IN ({placeholders})"
+        if hours:
+            where += " AND l.timestamp >= ?"
+            params.append(time.time() - (hours * 3600))
+
+        rows = await (await db.execute(
+            f"""SELECT u.id as user_id, u.username, l.model,
+                COUNT(l.id) as requests,
+                COALESCE(SUM(l.input_tokens), 0) as input_tokens,
+                COALESCE(SUM(l.cached_read_tokens), 0) as cached_read_tokens,
+                COALESCE(SUM(l.output_tokens), 0) as output_tokens,
+                COALESCE(SUM(l.cost), 0) as cost,
+                COALESCE(SUM(l.cache_hit), 0) as cache_hits
+               FROM usage_logs l
+               JOIN users u ON u.id = l.user_id
+               {where}
+               GROUP BY u.id, l.model
+               ORDER BY u.username COLLATE NOCASE, cost DESC""", params
+        )).fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_timeseries_for_users(db_path, user_ids, hours=24, bucket_minutes=60):
+    """Per-user, gap-filled time series (bucketed) for the compare view's
+    trend chart — lets users see not just totals but *when* usage happened."""
+    if not user_ids:
+        return {"buckets": [], "bucket_seconds": 0, "series": {}}
+    cutoff = time.time() - (hours * 3600)
+    bucket_minutes = max(1, int(bucket_minutes))
+    max_buckets = 1500
+    if (hours * 60) / bucket_minutes > max_buckets:
+        bucket_minutes = int((hours * 60) / max_buckets) + 1
+    bucket_seconds = bucket_minutes * 60
+
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        placeholders = ",".join("?" for _ in user_ids)
+        params = [bucket_seconds, bucket_seconds, cutoff] + list(user_ids)
+        rows = await (await db.execute(
+            f"""SELECT user_id, CAST(timestamp / ? AS INTEGER) * ? as bucket,
+                COUNT(*) as requests, SUM(input_tokens) as input_tokens,
+                SUM(cached_read_tokens) as cached_read_tokens, SUM(output_tokens) as output_tokens,
+                SUM(cost) as cost, SUM(cache_hit) as cache_hits
+               FROM usage_logs
+               WHERE timestamp >= ? AND user_id IN ({placeholders})
+               GROUP BY user_id, bucket ORDER BY bucket ASC""", params
+        )).fetchall()
+
+    by_user = {}
+    for r in rows:
+        by_user.setdefault(r["user_id"], {})[int(r["bucket"])] = dict(r)
+
+    now = time.time()
+    start = int(cutoff // bucket_seconds) * bucket_seconds
+    end = int(now // bucket_seconds) * bucket_seconds
+    buckets = []
+    b = start
+    while b <= end:
+        buckets.append(b)
+        b += bucket_seconds
+
+    series = {}
+    for uid in user_ids:
+        data = by_user.get(uid, {})
+        series[uid] = [data.get(bk, {
+            "bucket": bk, "requests": 0, "input_tokens": 0, "cached_read_tokens": 0,
+            "output_tokens": 0, "cost": 0, "cache_hits": 0,
+        }) for bk in buckets]
+
+    return {"buckets": buckets, "bucket_seconds": bucket_seconds, "series": series}
 
 
 async def get_timeseries(db_path, hours=24, bucket_minutes=60, user_id=None):
