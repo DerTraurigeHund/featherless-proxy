@@ -14,6 +14,14 @@ from app.auth import get_session_from_request
 
 router = APIRouter(prefix="/user")
 
+# Injected by main.py at startup.
+queue_mgr = None
+
+
+def init_user(_queue_mgr):
+    global queue_mgr
+    queue_mgr = _queue_mgr
+
 
 async def require_session(request: Request):
     session = await get_session_from_request(DB_PATH, request)
@@ -27,10 +35,36 @@ async def get_me(session: dict = Depends(require_session)):
     user = await get_user_by_id(DB_PATH, session["user_id"])
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    q = queue_mgr.stats() if queue_mgr else {}
     return JSONResponse({
         "id": user["id"], "username": user["username"],
         "credits": user["credits"], "credit_limit": user["credit_limit"],
         "is_admin": bool(user["is_admin"]),
+        "queue": {
+            "max_connections": q.get("max_connections", 0),
+            "used_connections": q.get("used_connections", 0),
+            "free_connections": q.get("free_connections", 0),
+            "utilization": q.get("utilization", 0),
+            "queue_size": q.get("queue_size", 0),
+            "oldest_wait_seconds": q.get("oldest_wait_seconds", 0),
+            "promote_after_seconds": q.get("promote_after_seconds", 0),
+        }
+    })
+
+
+@router.get("/api/system")
+async def user_system(session: dict = Depends(require_session)):
+    """Public queue capacity info for the user dashboard."""
+    q = queue_mgr.stats() if queue_mgr else {}
+    return JSONResponse({
+        "max_connections": q.get("max_connections", 0),
+        "used_connections": q.get("used_connections", 0),
+        "free_connections": q.get("free_connections", 0),
+        "utilization": q.get("utilization", 0),
+        "queue_size": q.get("queue_size", 0),
+        "oldest_wait_seconds": q.get("oldest_wait_seconds", 0),
+        "promote_after_seconds": q.get("promote_after_seconds", 0),
+        "queue_by_priority": q.get("queue_by_priority", {}),
     })
 
 
@@ -60,8 +94,8 @@ async def create_my_key(request: Request, session: dict = Depends(require_sessio
     body = await request.json()
     key = "fp_" + sec.token_urlsafe(32)
     name = body.get("name", "")
-    # Users always get P2
-    await create_api_key(DB_PATH, key, name, session["user_id"], 2)
+    # Users get P3 by default (Normal priority).
+    await create_api_key(DB_PATH, key, name, session["user_id"], 3)
     return JSONResponse({"key": key, "name": name})
 
 

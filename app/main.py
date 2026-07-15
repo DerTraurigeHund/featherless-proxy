@@ -20,7 +20,7 @@ from app.cache import ResponseCache
 from app.queue_manager import QueueManager
 from app.api_routes import router as api_router, init_routes
 from app.admin_routes import router as admin_router, init_admin
-from app.user_routes import router as user_router
+from app.user_routes import router as user_router, init_user
 
 try:
     from dotenv import load_dotenv
@@ -37,6 +37,7 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8080"))
 DATABASE_PATH = os.getenv("DATABASE_PATH", "proxy.db")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "32768"))
+PROMOTE_AFTER_SECONDS = float(os.getenv("PROMOTE_AFTER_SECONDS", "120"))
 
 import app.database as database
 database.DB_PATH = DATABASE_PATH
@@ -56,7 +57,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("featherless-proxy")
 
 cache = ResponseCache(ttl=CACHE_TTL)
-queue_mgr = QueueManager(max_connections=MAX_CONCURRENT_CONNECTIONS)
+queue_mgr = QueueManager(max_connections=MAX_CONCURRENT_CONNECTIONS,
+                         promote_after_seconds=PROMOTE_AFTER_SECONDS)
 http_client: httpx.AsyncClient | None = None
 
 
@@ -75,6 +77,7 @@ async def lifespan(app: FastAPI):
     http_client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=300.0, write=30.0, pool=30.0))
     init_routes(cache, queue_mgr, http_client, FEATHERLESS_API_BASE, FEATHERLESS_API_KEY, MAX_CONCURRENT_CONNECTIONS, MAX_TOKENS)
     init_admin(queue_mgr, cache)
+    init_user(queue_mgr)
     await queue_mgr.start()
     await cache.start_cleanup()
     logger.info(f"Proxy started on {HOST}:{PORT} (max_conn={MAX_CONCURRENT_CONNECTIONS})")

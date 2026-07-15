@@ -106,7 +106,7 @@ async def api_create_key(request: Request, admin: dict = Depends(require_admin))
     key = "fp_" + secrets.token_urlsafe(32)
     name = body.get("name", "")
     user_id = body.get("user_id")
-    priority = int(body.get("priority", 2))
+    priority = max(1, min(4, int(body.get("priority", 2))))
     enabled = int(body.get("enabled", 1))
     user = await create_api_key(DB_PATH, key, name, user_id, priority)
     # enable/disable if requested (schema default is 1)
@@ -122,7 +122,7 @@ async def api_update_key(key_id: int, request: Request, admin: dict = Depends(re
     if "name" in body:
         kwargs["name"] = body["name"]
     if "priority" in body:
-        kwargs["priority"] = int(body["priority"])
+        kwargs["priority"] = max(1, min(4, int(body["priority"])))
     if "enabled" in body:
         kwargs["enabled"] = int(body["enabled"])
     if "user_id" in body:

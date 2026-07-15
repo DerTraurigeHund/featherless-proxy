@@ -15,6 +15,18 @@ async def init_db(db_path: str = DB_PATH):
         with open(SCHEMA_PATH, "r") as f:
             await db.executescript(f.read())
         await db.commit()
+        await _run_migrations(db)
+
+
+async def _run_migrations(db):
+    """Lightweight schema/data migrations tracked via SQLite PRAGMA user_version."""
+    row = await (await db.execute("PRAGMA user_version")).fetchone()
+    version = row[0] if row else 0
+    if version < 1:
+        # Promote all existing P2 API keys to P3 as part of introducing P1-P4.
+        await db.execute("UPDATE api_keys SET priority = 3 WHERE priority = 2")
+        await db.execute("PRAGMA user_version = 1")
+        await db.commit()
 
 
 # --- Users ---

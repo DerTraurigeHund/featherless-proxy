@@ -4,6 +4,7 @@ Featherless Proxy - API routes (OpenAI-compatible)
 import json
 import time
 import logging
+import asyncio
 
 import httpx
 from fastapi import APIRouter, Request, HTTPException, Depends
@@ -25,7 +26,8 @@ http_client: httpx.AsyncClient | None = None
 FEATHERLESS_API_BASE = ""
 FEATHERLESS_API_KEY = ""
 MAX_CONCURRENT_CONNECTIONS = 16
-MAX_TOKENS = 8192
+MAX_TOKENS = 8192*4
+STREAM_HEARTBEAT_INTERVAL = 25.0
 
 
 def init_routes(_cache, _queue_mgr, _http_client, _api_base, _api_key, _max_conn, _max_tokens):
@@ -36,7 +38,7 @@ def init_routes(_cache, _queue_mgr, _http_client, _api_base, _api_key, _max_conn
     FEATHERLESS_API_BASE = _api_base
     FEATHERLESS_API_KEY = _api_key
     MAX_CONCURRENT_CONNECTIONS = _max_conn
-    MAX_TOKENS = _max_tokens
+    # MAX_TOKENS = _max_tokens
 
 
 def _compute_cost(input_tokens, cached_read_tokens, output_tokens,
@@ -190,14 +192,34 @@ async def _handle_streaming(request, body, model, messages, temperature, cfg,
         response_created = int(time.time())
         usage_logged = False
         aborted = False
+        acquire_task = None
         try:
-            try:
-                reservation = await queue_mgr.acquire(
-                    priority=priority, cost=cfg["cost"],
-                    name=api_key_data.get("name", ""), model=model, timeout=300.0)
-            except QueueTimeout:
-                yield (f"data: {json.dumps({'error': {'message': 'Queue timeout', 'code': 504}})}\n\n").encode()
-                return
+            # Wait for a queue slot by running queue_mgr.acquire in a background task.
+            # While waiting, we periodically wake up via asyncio.wait_for with
+            # asyncio.shield so that we do not lose our queue position, allowing us
+            # to emit SSE comment lines (heartbeats) to prevent proxy timeouts.
+            acquire_task = asyncio.create_task(queue_mgr.acquire(
+                priority=priority, cost=cfg["cost"],
+                name=api_key_data.get("name", ""), model=model, timeout=300.0))
+
+            queue_deadline = time.time() + 300.0
+            while not acquire_task.done():
+                remaining = queue_deadline - time.time()
+                if remaining <= 0:
+                    acquire_task.cancel()
+                    yield (f"data: {json.dumps({'error': {'message': 'Queue timeout', 'code': 504}})}\n\n").encode()
+                    return
+                try:
+                    reservation = await asyncio.wait_for(
+                        asyncio.shield(acquire_task),
+                        timeout=min(STREAM_HEARTBEAT_INTERVAL, remaining))
+                except asyncio.TimeoutError:
+                    if await request.is_disconnected():
+                        aborted = True
+                        return
+                    # SSE comment line — keeps the HTTP response alive without
+                    # producing a visible event on the client side.
+                    yield b":\n\n"
 
             if await request.is_disconnected():
                 aborted = True
@@ -284,6 +306,8 @@ async def _handle_streaming(request, body, model, messages, temperature, cfg,
             aborted = True
             yield (f"data: {json.dumps({'error': {'message': str(e)}})}\n\n").encode()
         finally:
+            if acquire_task is not None and not acquire_task.done():
+                acquire_task.cancel()
             if upstream_response is not None:
                 await upstream_response.aclose()
             if reservation is not None:
@@ -334,9 +358,18 @@ async def list_models_api(api_key_data: dict = Depends(verify_api_key)):
 
 @router.get("/v1/me")
 async def get_me(api_key_data: dict = Depends(verify_api_key)):
+    q = queue_mgr.stats() if queue_mgr else {}
     return JSONResponse({
         "api_key_name": api_key_data["name"],
         "user_id": api_key_data.get("user_id"),
         "credits": api_key_data.get("user_credits", 0),
         "is_admin": _is_admin_key(api_key_data),
+        "priority": api_key_data.get("priority", 2),
+        "queue": {
+            "max_connections": q.get("max_connections", 0),
+            "used_connections": q.get("used_connections", 0),
+            "free_connections": q.get("free_connections", 0),
+            "queue_size": q.get("queue_size", 0),
+            "promote_after_seconds": q.get("promote_after_seconds", 0),
+        }
     })

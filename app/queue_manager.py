@@ -75,9 +75,11 @@ class QueueTimeout(TimeoutError):
 
 
 class QueueManager:
-    def __init__(self, max_connections: int, aging_seconds: float = 8.0):
+    def __init__(self, max_connections: int, aging_seconds: float = 8.0,
+                 promote_after_seconds: float = 120.0):
         self.max_connections = max(1, int(max_connections))
         self.aging_seconds = aging_seconds
+        self.promote_after_seconds = max(1.0, float(promote_after_seconds))
         self.used_connections = 0
         self._waiters: list[_Waiter] = []
         self._cond = asyncio.Condition()
@@ -110,8 +112,22 @@ class QueueManager:
     def free_connections(self) -> int:
         return self.max_connections - self.used_connections
 
+    def _effective_priority(self, waiter: _Waiter, now: float | None = None) -> int:
+        """Lower number = higher priority.
+
+        A waiter is promoted by one priority level for each full
+        ``promote_after_seconds`` window it has already waited, preventing
+        low-priority requests from starving indefinitely.
+        """
+        if now is None:
+            now = time.time()
+        elapsed = now - waiter.enqueued
+        promotions = int(elapsed // self.promote_after_seconds)
+        return max(1, waiter.priority - promotions)
+
     def _ordered(self) -> list[_Waiter]:
-        return sorted(self._waiters, key=lambda w: (w.priority, w.seq))
+        now = time.time()
+        return sorted(self._waiters, key=lambda w: (self._effective_priority(w, now), w.seq))
 
     def _chosen(self) -> _Waiter | None:
         """Pick the waiter allowed to proceed right now (or None).
@@ -205,7 +221,8 @@ class QueueManager:
         processed = self._stats["total_processed"] or 1
         prio_counts: dict[int, int] = {}
         for w in self._waiters:
-            prio_counts[w.priority] = prio_counts.get(w.priority, 0) + 1
+            eff = self._effective_priority(w, now)
+            prio_counts[eff] = prio_counts.get(eff, 0) + 1
         oldest_wait = max((now - w.enqueued for w in ordered), default=0.0)
         return {
             **self._stats,
@@ -215,11 +232,13 @@ class QueueManager:
             "utilization": round(self.used_connections / self.max_connections, 4),
             "queue_size": len(self._waiters),
             "queue_by_priority": prio_counts,
+            "promote_after_seconds": self.promote_after_seconds,
             "oldest_wait_seconds": round(oldest_wait, 2),
             "avg_wait_ms": round(self._stats["queue_wait_total_ms"] / processed, 1),
             "waiting": [
                 {
                     "priority": w.priority,
+                    "effective_priority": self._effective_priority(w, now),
                     "cost": w.cost,
                     "model": w.model,
                     "name": w.name,

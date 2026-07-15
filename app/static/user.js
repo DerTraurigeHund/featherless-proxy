@@ -53,8 +53,29 @@ async function loadStats() {
             fetchJSON(`/user/api/timeseries?hours=${currentHours}&bucket_minutes=${currentBucket}`),
             fetchJSON('/user/api/logs?limit=60'),
         ]);
-        userInfo = await fetchJSON('/user/api/me'); renderCredits();
-    } catch (e) { if (String(e).includes('401')) location.href = '/login'; return; }
+    } catch (e) {
+        if (String(e).includes('401')) location.href = '/login';
+        else console.error('Failed to load dashboard stats:', e);
+        return;
+    }
+
+    // Queue/system info is best-effort: a missing endpoint (e.g. server not
+    // restarted after deploy) must not hide the rest of the dashboard.
+    let system = {};
+    try { system = await fetchJSON('/user/api/system'); } catch (e) {
+        console.warn('Queue status unavailable:', e);
+    }
+    try { userInfo = await fetchJSON('/user/api/me'); renderCredits(); } catch (e) {
+        if (String(e).includes('401')) { location.href = '/login'; return; }
+        console.warn('Could not refresh user info:', e);
+    }
+
+    const q = system || {};
+    const free = q.free_connections ?? 0, max = q.max_connections || 1;
+    const used = q.used_connections || 0;
+    setText('user-free-slots', `${free}/${max}`);
+    const qsEl = document.getElementById('user-queue-status');
+    if (qsEl) qsEl.textContent = q.queue_size ? `${q.queue_size} waiting` : (used >= max ? 'full' : 'ready');
 
     const o = stats.overall || {};
     setText('t-cost', fmtCost(o.total_cost));
@@ -461,11 +482,18 @@ print(resp.choices[0].message.content)`;
             </header>
             <div class="content">
                 <section class="view active" id="view-overview">
-                    <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+                    <div class="card" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px">
                         <div><div class="label" style="color:var(--muted);font-size:0.74rem;font-weight:600">YOUR CREDITS</div>
                         <div id="user-credits" class="value credit-value" style="font-size:2.4rem;font-weight:750">$0.00</div>
                         <div class="foot muted" style="font-size:0.78rem">Deducted per request based on token usage</div></div>
-                        <button onclick="showView('keys')">🔑 Manage API keys</button>
+                        <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+                            <div style="text-align:right">
+                                <div class="label" style="color:var(--muted);font-size:0.74rem;font-weight:600">FREE SLOTS</div>
+                                <div id="user-free-slots" class="value" style="font-size:2.2rem;font-weight:750">—</div>
+                                <div id="user-queue-status" class="foot muted" style="font-size:0.78rem">—</div>
+                            </div>
+                            <button onclick="showView('keys')">🔑 Manage API keys</button>
+                        </div>
                     </div>
                     <div class="grid tiles">
                         ${tile('green', 'Total Cost', 't-cost')}

@@ -240,6 +240,8 @@ tbody tr.lb-me td:first-child { font-weight: 700; color: var(--primary); }
 .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 0.72rem; font-weight: 650; }
 .badge-prio-1 { background: var(--red-soft); color: #fca5a5; }
 .badge-prio-2 { background: var(--amber-soft); color: #fcd34d; }
+.badge-prio-3 { background: rgba(125,133,151,0.16); color: var(--text-2); }
+.badge-prio-4 { background: rgba(79,140,255,0.14); color: #9dc0ff; }
 .badge-hit { background: var(--green-soft); color: #6ee7b7; }
 .badge-miss { background: rgba(125,133,151,0.16); color: var(--muted); }
 .badge-admin { background: var(--primary-soft); color: #9dc0ff; }

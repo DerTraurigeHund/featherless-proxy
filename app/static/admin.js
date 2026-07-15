@@ -107,6 +107,16 @@ function updateChart(name, labels, datasets) {
     ch.update('none');
 }
 
+/* ============================ Priority helpers ============================ */
+
+function prioLabel(p) {
+    const labels = { 1: 'Immediate', 2: 'High', 3: 'Normal', 4: 'Low' };
+    return `P${p} · ${labels[p] || 'Queue'}`;
+}
+function prioBadge(p) {
+    return `<span class="badge badge-prio-${p}">${prioLabel(p)}</span>`;
+}
+
 /* ============================ Live system ============================ */
 
 async function loadSystem() {
@@ -137,7 +147,7 @@ async function loadSystem() {
     const ws = q.waiting || [];
     setHTML('waiters-tbody', ws.length === 0 ? '<tr><td colspan="4" class="empty">Queue empty — slots available</td></tr>' :
         ws.map(w => `<tr>
-            <td>${w.priority === 1 ? '<span class="badge badge-prio-1">P1</span>' : '<span class="badge badge-prio-2">P2</span>'}</td>
+            <td>${prioBadge(w.effective_priority != null ? w.effective_priority : w.priority)}</td>
             <td>${escapeHtml(w.model || '-')}</td><td class="num">${w.cost}</td><td class="num">${w.wait_seconds}s</td></tr>`).join(''));
 }
 
@@ -149,7 +159,7 @@ async function loadLogs() {
     setHTML('logs-tbody', (logs || []).length === 0 ? emptyRow(9) :
         logs.map(l => `<tr><td class="muted">${fmtTime(l.timestamp)}</td><td>${escapeHtml(l.api_key_name || '-')}</td>
             <td>${escapeHtml(l.model)}</td>
-            <td>${l.priority === 1 ? '<span class="badge badge-prio-1">P1</span>' : '<span class="badge badge-prio-2">P2</span>'}</td>
+            <td>${prioBadge(l.priority)}</td>
             <td class="num">${fmtNum(l.input_tokens)}</td><td class="num">${fmtNum(l.cached_read_tokens)}</td>
             <td class="num">${fmtNum(l.output_tokens)}</td>
             <td>${l.cache_hit ? '<span class="badge badge-hit">HIT</span>' : '<span class="badge badge-miss">MISS</span>'}</td>
@@ -236,7 +246,7 @@ async function loadKeys() {
         keys.map(k => `<tr><td>${escapeHtml(k.name)}</td>
             <td><span class="copy-chip" data-copy="${escapeHtml(k.key)}">${escapeHtml(k.key.substring(0, 16))}… 📋</span></td>
             <td>${k.username ? escapeHtml(k.username) : '<span class="muted">— system key</span>'}</td>
-            <td>${k.priority === 1 ? '<span class="badge badge-prio-1">P1 · Immediate</span>' : '<span class="badge badge-prio-2">P2 · Queue</span>'}</td>
+            <td>${prioBadge(k.priority)}</td>
             <td><button class="sm danger" onclick="deleteKey(${k.id})">Delete</button></td></tr>`).join(''));
 }
 function showCreateKeyModal() {
@@ -244,9 +254,9 @@ function showCreateKeyModal() {
     const o = openModal(`<h3>Create API key</h3>
         <div class="field"><label>Key name</label><input id="nk-name" placeholder="e.g. Production server"></div>
         <div class="field"><label>Owner</label><select id="nk-user"><option value="">No owner (system key, P1)</option>${opts}</select></div>
-        <div class="field"><label>Priority</label><select id="nk-priority"><option value="1">P1 · Immediate</option><option value="2" selected>P2 · Queue</option></select></div>
+        <div class="field"><label>Priority</label><select id="nk-priority"><option value="1">P1 · Immediate</option><option value="2">P2 · High</option><option value="3" selected>P3 · Normal</option><option value="4">P4 · Low</option></select></div>
         <div class="modal-actions"><button class="subtle" onclick="closeModal()">Cancel</button><button onclick="createKey()">Create</button></div>`);
-    o.querySelector('#nk-user').addEventListener('change', e => { document.getElementById('nk-priority').value = e.target.value === '' ? '1' : '2'; });
+    o.querySelector('#nk-user').addEventListener('change', e => { document.getElementById('nk-priority').value = e.target.value === '' ? '1' : '3'; });
     o.querySelector('#nk-name').focus();
 }
 async function createKey() {
