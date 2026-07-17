@@ -29,6 +29,29 @@ MAX_CONCURRENT_CONNECTIONS = 16
 MAX_TOKENS = 8192*4
 STREAM_HEARTBEAT_INTERVAL = 25.0
 
+# Upstream retry behaviour: transient Featherless failures (HTTP 429, 5xx and
+# connection errors) are retried up to UPSTREAM_MAX_RETRIES times with a
+# linear backoff before the error is passed to the client.
+UPSTREAM_MAX_RETRIES = 20
+RETRY_BASE_DELAY = 1.0
+RETRY_MAX_DELAY = 10.0
+
+# The proxy frees/claims queue slots faster than Featherless registers the
+# closed/opened upstream connections. After waiting in the queue, pause
+# briefly before opening the upstream connection.
+QUEUE_GRACE_DELAY = 1.0
+QUEUE_GRACE_THRESHOLD = 0.1
+
+
+def _should_retry(status_code: int) -> bool:
+    """Transient upstream failures that are worth retrying."""
+    return status_code == 429 or status_code >= 500
+
+
+def _retry_delay(attempt: int) -> float:
+    """Linear backoff capped at RETRY_MAX_DELAY (1s, 2s, ..., 10s, 10s)."""
+    return min(RETRY_BASE_DELAY * attempt, RETRY_MAX_DELAY)
+
 
 def init_routes(_cache, _queue_mgr, _http_client, _api_base, _api_key, _max_conn, _max_tokens):
     global cache, queue_mgr, http_client, FEATHERLESS_API_BASE, FEATHERLESS_API_KEY, MAX_CONCURRENT_CONNECTIONS, MAX_TOKENS
@@ -118,6 +141,7 @@ async def chat_completions(request: Request, api_key_data: dict = Depends(verify
 
 async def _handle_blocking(request, body, model, messages, temperature, cfg,
                            api_key_data, user_id, is_admin, priority, cached_ratio):
+    acquire_start = time.time()
     try:
         reservation = await queue_mgr.acquire(
             priority=priority, cost=cfg["cost"],
@@ -126,16 +150,48 @@ async def _handle_blocking(request, body, model, messages, temperature, cfg,
         raise HTTPException(status_code=504, detail="Queue timeout")
 
     try:
+        # If we had to queue for a slot, give Featherless a brief moment to
+        # register the freed upstream connection before opening a new one.
+        if time.time() - acquire_start > QUEUE_GRACE_THRESHOLD:
+            await asyncio.sleep(QUEUE_GRACE_DELAY)
+
         forward_body = dict(body)
         forward_body["stream"] = False
         if "max_tokens" not in forward_body and MAX_TOKENS > 0:
             forward_body["max_tokens"] = MAX_TOKENS
         headers = {"Authorization": f"Bearer {FEATHERLESS_API_KEY}",
                    "Content-Type": "application/json"}
-        resp = await http_client.post(f"{FEATHERLESS_API_BASE}/chat/completions",
-            headers=headers, json=forward_body, timeout=300.0)
-        if resp.status_code != 200:
-            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+        # Retry transient upstream failures instead of passing them through.
+        resp = None
+        error_status = 502
+        error_text = "Upstream unavailable"
+        for attempt in range(1, UPSTREAM_MAX_RETRIES + 1):
+            try:
+                resp = await http_client.post(f"{FEATHERLESS_API_BASE}/chat/completions",
+                    headers=headers, json=forward_body, timeout=300.0)
+            except httpx.RequestError as e:
+                logger.warning(
+                    f"Upstream connection error model={model} "
+                    f"attempt={attempt}/{UPSTREAM_MAX_RETRIES}: {e}")
+                resp = None
+                error_status = 502
+                error_text = f"Upstream connection error: {e}"
+            else:
+                if resp.status_code == 200:
+                    break
+                error_status = resp.status_code
+                error_text = resp.text
+                logger.warning(
+                    f"Upstream error {error_status} model={model} "
+                    f"attempt={attempt}/{UPSTREAM_MAX_RETRIES}")
+                resp = None
+                if not _should_retry(error_status):
+                    break
+            if attempt < UPSTREAM_MAX_RETRIES:
+                await asyncio.sleep(_retry_delay(attempt))
+        if resp is None:
+            raise HTTPException(status_code=error_status, detail=error_text)
         result = resp.json()
 
         usage = result.get("usage", {})
@@ -198,6 +254,7 @@ async def _handle_streaming(request, body, model, messages, temperature, cfg,
             # While waiting, we periodically wake up via asyncio.wait_for with
             # asyncio.shield so that we do not lose our queue position, allowing us
             # to emit SSE comment lines (heartbeats) to prevent proxy timeouts.
+            acquire_start = time.time()
             acquire_task = asyncio.create_task(queue_mgr.acquire(
                 priority=priority, cost=cfg["cost"],
                 name=api_key_data.get("name", ""), model=model, timeout=300.0))
@@ -225,6 +282,11 @@ async def _handle_streaming(request, body, model, messages, temperature, cfg,
                 aborted = True
                 return
 
+            # If we had to queue for a slot, give Featherless a brief moment to
+            # register the freed upstream connection before opening a new one.
+            if time.time() - acquire_start > QUEUE_GRACE_THRESHOLD:
+                await asyncio.sleep(QUEUE_GRACE_DELAY)
+
             forward_body = dict(body)
             forward_body["stream"] = True
             forward_body["stream_options"] = {"include_usage": True}
@@ -233,13 +295,49 @@ async def _handle_streaming(request, body, model, messages, temperature, cfg,
             headers = {"Authorization": f"Bearer {FEATHERLESS_API_KEY}",
                        "Content-Type": "application/json", "Accept": "text/event-stream"}
 
-            upstream_response = await http_client.send(
-                http_client.build_request("POST", f"{FEATHERLESS_API_BASE}/chat/completions",
-                    headers=headers, json=forward_body), stream=True)
+            # Retry transient upstream failures instead of passing them through.
+            # Heartbeats are emitted during backoff so the client connection
+            # stays alive across the whole retry sequence.
+            last_error_status = 502
+            last_error_body = b"Upstream unavailable"
+            for attempt in range(1, UPSTREAM_MAX_RETRIES + 1):
+                if await request.is_disconnected():
+                    aborted = True
+                    return
+                try:
+                    candidate = await http_client.send(
+                        http_client.build_request("POST", f"{FEATHERLESS_API_BASE}/chat/completions",
+                            headers=headers, json=forward_body), stream=True)
+                except httpx.RequestError as e:
+                    logger.warning(
+                        f"Upstream connection error model={model} "
+                        f"attempt={attempt}/{UPSTREAM_MAX_RETRIES}: {e}")
+                    last_error_status = 502
+                    last_error_body = f"Upstream connection error: {e}".encode()
+                else:
+                    if candidate.status_code == 200:
+                        upstream_response = candidate
+                        break
+                    last_error_status = candidate.status_code
+                    last_error_body = await candidate.aread()
+                    await candidate.aclose()
+                    logger.warning(
+                        f"Upstream error {last_error_status} model={model} "
+                        f"attempt={attempt}/{UPSTREAM_MAX_RETRIES}")
+                    if not _should_retry(last_error_status):
+                        break
+                if attempt < UPSTREAM_MAX_RETRIES:
+                    backoff_end = time.time() + _retry_delay(attempt)
+                    while time.time() < backoff_end:
+                        await asyncio.sleep(min(STREAM_HEARTBEAT_INTERVAL, backoff_end - time.time()))
+                        if time.time() < backoff_end:
+                            if await request.is_disconnected():
+                                aborted = True
+                                return
+                            yield b":\n\n"
 
-            if upstream_response.status_code != 200:
-                error_body = await upstream_response.aread()
-                yield (f"data: {json.dumps({'error': {'message': error_body.decode(), 'code': upstream_response.status_code}})}\n\n").encode()
+            if upstream_response is None:
+                yield (f"data: {json.dumps({'error': {'message': last_error_body.decode(errors='replace'), 'code': last_error_status}})}\n\n").encode()
                 return
 
             async for chunk in upstream_response.aiter_bytes():
