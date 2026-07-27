@@ -28,6 +28,7 @@ FEATHERLESS_API_KEY = ""
 MAX_CONCURRENT_CONNECTIONS = 16
 MAX_TOKENS = 8192*4
 STREAM_HEARTBEAT_INTERVAL = 25.0
+QUEUE_TIMEOUT = 900.0  # 15 minutes max wait in the queue
 
 # Upstream retry behaviour: transient Featherless failures (HTTP 429, 5xx and
 # connection errors) are retried up to UPSTREAM_MAX_RETRIES times with a
@@ -145,7 +146,7 @@ async def _handle_blocking(request, body, model, messages, temperature, cfg,
     try:
         reservation = await queue_mgr.acquire(
             priority=priority, cost=cfg["cost"],
-            name=api_key_data.get("name", ""), model=model, timeout=300.0)
+            name=api_key_data.get("name", ""), model=model, timeout=QUEUE_TIMEOUT)
     except QueueTimeout:
         raise HTTPException(status_code=504, detail="Queue timeout")
 
@@ -257,9 +258,9 @@ async def _handle_streaming(request, body, model, messages, temperature, cfg,
             acquire_start = time.time()
             acquire_task = asyncio.create_task(queue_mgr.acquire(
                 priority=priority, cost=cfg["cost"],
-                name=api_key_data.get("name", ""), model=model, timeout=300.0))
+                name=api_key_data.get("name", ""), model=model, timeout=QUEUE_TIMEOUT))
 
-            queue_deadline = time.time() + 300.0
+            queue_deadline = time.time() + QUEUE_TIMEOUT
             while not acquire_task.done():
                 remaining = queue_deadline - time.time()
                 if remaining <= 0:
